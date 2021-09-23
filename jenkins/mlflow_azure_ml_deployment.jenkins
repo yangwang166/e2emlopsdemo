@@ -1,0 +1,109 @@
+node {
+    def GITREPO         = "/var/lib/jenkins/workspace/${env.JOB_NAME}"
+    def GITREPOREMOTE   = "https://edge2ai@bitbucket.org/edge2ai/mlops.git"
+    def GITCREDID       = "gittoken"
+    def CURRENTRELEASE  = "main"
+    def TEST_DBTOKEN         = "mlopstesttoken"
+    def TEST_DBURL           = "https://adb-6221676154251448.8.azuredatabricks.net"
+    def SCRIPTPATH      = "${GITREPO}/cicd-scripts"
+    def TRAIN_NOTEBOOKPATH    = "${GITREPO}/train_notebooks"
+    def DEPLOY_NOTEBOOKPATH    = "${GITREPO}/azure_deploy_nb"
+    def LIBRARYPATH     = "${GITREPO}/libraries"
+    def BUILDPATH       = "${GITREPO}/Builds/${env.JOB_NAME}-${env.BUILD_NUMBER}"
+    def OUTFILEPATH     = "${BUILDPATH}/logs/Output"
+    def TESTRESULTPATH  = "${BUILDPATH}/logs/reports/junit"
+    def TRAIN_WORKSPACEPATH   = "/Shared/CICD/train_notebooks"
+    def DEPLOY_WORKSPACEPATH   = "/Shared/CICD/azure_deploy_nb"
+    def DBFSPATH        = "dbfs:/Libs/python"
+    def CONDAPATH       = "/root/anaconda3"
+    def TEST_CLUSTERID       = "0816-130739-money794"
+    def CONDAENV        = "tempenv"
+    def SLACKURL        = "https://hooks.slack.com/services/T01UWPT7QBT/B01UL0NQDJB/your_token"
+    def SLACKCHANNEL    = "#cicd"
+
+    stage('Setup') {
+        //cleanWs()
+        echo "======================Setup=============================="
+        withCredentials([string(credentialsId: TEST_DBTOKEN, variable: 'TOKEN')]) {
+
+            sh """#!/bin/bash
+
+                  rm -rf ./*
+
+                  wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh -nv -O miniconda.sh
+                  bash miniconda.sh -b -p $WORKSPACE/miniconda
+
+                  source $WORKSPACE/miniconda/etc/profile.d/conda.sh
+
+                  conda config --set always_yes yes --set changeps1 no
+                  conda update -q conda
+
+                  conda create --name ${CONDAENV}  python=3.8
+
+                  conda activate ${CONDAENV}
+
+                  pip install requests databricks-connect databricks-cli pytest
+
+               """
+        }
+    }
+    stage('Checkout') { // for display purposes
+        echo "======================Checkout=============================="
+        echo "Pulling ${CURRENTRELEASE} Branch from Bitbucket"
+        git branch: CURRENTRELEASE, credentialsId: GITCREDID, url: GITREPOREMOTE
+        //git branch: CURRENTRELEASE, url: GITREPOREMOTE
+    }
+    stage('Model Stage Transition') {
+        echo "======================Model Stage Transition=============================="
+        echo "From Stage: ${env.fromStage}"
+        echo "To Stage: ${env.toStage}"
+    }
+    stage('Deploy Model to Azure') {
+        if (env.toStage == 'Staging'){
+            echo "======================Deploy Model to Azure Staging(Test) Env=============================="
+            withCredentials([string(credentialsId: TEST_DBTOKEN, variable: 'TOKEN')]) {
+                sh """
+                    source $WORKSPACE/miniconda/etc/profile.d/conda.sh
+    
+                    conda activate ${CONDAENV}
+    
+                    mkdir -p ${OUTFILEPATH}
+    
+                    python ${SCRIPTPATH}/executenotebook.py --shard=${TEST_DBURL}\
+                                --token=$TOKEN\
+                                --clusterid=${TEST_CLUSTERID}\
+                                --localpath=${DEPLOY_NOTEBOOKPATH}\
+                                --workspacepath=${DEPLOY_WORKSPACEPATH}\
+                                --outfilepath=${OUTFILEPATH}
+                   """
+            }
+            sh """sed -i -e 's #ENV# ${OUTFILEPATH} g' ${SCRIPTPATH}/evaluatenotebookruns.py
+                  
+                  source $WORKSPACE/miniconda/etc/profile.d/conda.sh
+                  conda activate ${CONDAENV} 
+                  
+                  python -m pytest --junit-xml=${TESTRESULTPATH}/TEST-notebookout.xml ${SCRIPTPATH}/evaluatenotebookruns.py || true
+               """
+        }
+    }
+    stage('Report Test Results') {
+        if (env.toStage == 'Staging'){
+            echo "======================Report Test Result=============================="
+            junit "**/reports/junit/*.xml"
+        }
+    }
+    stage('Send Notifications') {
+        if (env.toStage == 'Staging'){
+            echo "======================Send Notifications=============================="
+            sh """
+                source $WORKSPACE/miniconda/etc/profile.d/conda.sh
+                conda activate ${CONDAENV} 
+                
+                python ${SCRIPTPATH}/notify.py --slackurl=${SLACKURL}\
+                                --message='${env.JOB_NAME}:Build-${env.BUILD_NUMBER}'\
+                                --channel=${SLACKCHANNEL}\
+                                --outputpath=${OUTFILEPATH}
+               """
+        }
+    }
+}
