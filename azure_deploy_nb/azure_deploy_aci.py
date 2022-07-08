@@ -10,6 +10,7 @@ workspace_name = "yw-aml-ws-1"
 workspace_location = "australiaeast"
 resource_group = "yw-aml-rs-1"
 subscription_id = "6369c148-f8a9-4fb5-8a9d-ac1b2c8e756e"
+#test
 
 # COMMAND ----------
 
